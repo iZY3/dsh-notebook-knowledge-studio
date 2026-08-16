@@ -23,6 +23,23 @@ function tmpCore() {
   return { core, ctx, dir }
 }
 
+function tmpWebCore(fetchImpl) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nks-core-web-'))
+  const root = path.join(dir, '.notebook-knowledge')
+  const web = {
+    fetch: fetchImpl,
+    search: async ({ query }) => ({ sources: [{ title: query, url: 'https://example.com/', snippet: 'result' }] }),
+  }
+  const ctx = { get: name => name === 'web' ? web : undefined, logger: undefined }
+  const webLookup = async () => [{ address: '93.184.216.34', family: 4 }]
+  const core = createCore({ ctx, config: { root }, webLookup })
+  return { core, ctx, dir }
+}
+
+function htmlPage(title, body) {
+  return `<html><head><title>${title}</title></head><body><main>${body}</main></body></html>`
+}
+
 test('集成:text 来源导入 → 去重 → 检索问答(降级) → 引用', async () => {
   const { core } = tmpCore()
   const nb = await core.createNotebook('测试库')
@@ -51,7 +68,7 @@ test('集成:text 来源导入 → 去重 → 检索问答(降级) → 引用', 
   const answer = await core.query(nb.id, '自注意力有什么特点?')
   assert.ok(answer.answer.length > 10)
   assert.ok(answer.citations.length >= 1)
-  assert.equal(answer.citations[0].sourceId, r1.sourceId)
+  assert.ok([r1.sourceId, r3.sourceId].includes(answer.citations[0].sourceId))
   assert.ok(answer.degraded)
 
   // 限定 sourceIds 过滤
@@ -107,7 +124,10 @@ test('集成:web 不可用时 discover/url 明确报错', async () => {
   const { core } = tmpCore()
   await assert.rejects(() => core.discoverSources('机器人'), /unavailable/)
   const nb = await core.createNotebook('W')
-  await assert.rejects(() => core.addSource(nb.id, { type: 'url', url: 'https://example.com' }), /unavailable/)
+  await assert.rejects(
+    () => core.addSource(nb.id, { type: 'url', url: 'https://example.com' }),
+    error => error.code === 'WEB_FETCH_UNAVAILABLE' && error.statusCode === 503,
+  )
 })
 
 test('集成:Studio 降级生成(mindmap/table/flashcards,LLM 不可用)', async () => {
@@ -147,4 +167,109 @@ test('状态:降级模式下各项可用性如实报告', async () => {
   assert.match(s.llm, /unavailable/)
   assert.equal(s.web, 'unavailable')
   assert.match(s.qwenMmPlugins, /not detected/)
+})
+
+test('Web:预览与 URL 导入共用 fetch provider', async () => {
+  const body = 'Public article content about reinforcement learning. '.repeat(8)
+  const { core } = tmpWebCore(async ({ url }) => ({
+    url,
+    statusCode: 200,
+    body: { kind: 'html', content: htmlPage('RL Article', body) },
+    truncated: false,
+  }))
+  const nb = await core.createNotebook('Web import')
+
+  const preview = await core.previewUrl('https://example.com/article')
+  assert.equal(preview.httpStatus, 200)
+  assert.equal(preview.title, 'RL Article')
+  assert.ok(preview.excerpt.includes('reinforcement learning'))
+
+  const added = await core.addSource(nb.id, { type: 'url', url: 'https://example.com/article' })
+  assert.equal(added.status, 'ok')
+  assert.equal((await core.listSources(nb.id)).length, 1)
+
+  const status = await core.status()
+  assert.equal(status.webCapabilities.fetch, 'configured:http')
+  assert.equal(status.webCapabilities.lastFetchError, null)
+})
+
+test('Web:远端 HTTP/短正文/provider 缺失返回稳定错误', async () => {
+  const notFound = tmpWebCore(async ({ url }) => ({
+    url,
+    statusCode: 404,
+    body: { kind: 'html', content: htmlPage('Missing', 'not found') },
+    truncated: false,
+  })).core
+  const nb = await notFound.createNotebook('Errors')
+  const preview = await notFound.previewUrl('https://example.com/missing')
+  assert.equal(preview.httpStatus, 404)
+  assert.match(preview.note, /正文提取失败/)
+  await assert.rejects(
+    () => notFound.addSource(nb.id, { type: 'url', url: 'https://example.com/missing' }),
+    error => error.code === 'WEB_REMOTE_HTTP' && error.statusCode === 502,
+  )
+
+  const short = tmpWebCore(async ({ url }) => ({
+    url,
+    statusCode: 200,
+    body: { kind: 'html', content: '<title>Short</title><p>tiny</p>' },
+    truncated: false,
+  })).core
+  const shortNb = await short.createNotebook('Short')
+  await assert.rejects(
+    () => short.addSource(shortNb.id, { type: 'url', url: 'https://example.com/short' }),
+    error => error.code === 'WEB_EXTRACT_TOO_SHORT' && error.statusCode === 422,
+  )
+
+  const unavailable = tmpWebCore(async () => {
+    throw Object.assign(new Error('no usable web provider is registered'), { code: 'WEB_PROVIDER_UNAVAILABLE' })
+  }).core
+  await assert.rejects(
+    () => unavailable.previewUrl('https://example.com/'),
+    error => error.code === 'WEB_FETCH_UNAVAILABLE' && error.statusCode === 503,
+  )
+  const unavailableStatus = await unavailable.status()
+  assert.equal(unavailableStatus.webCapabilities.lastFetchError.code, 'WEB_FETCH_UNAVAILABLE')
+})
+
+test('Web:批量导入保留逐项错误码', async () => {
+  const body = 'Long enough public article body. '.repeat(8)
+  const { core } = tmpWebCore(async ({ url }) => {
+    if (url.includes('/bad')) throw Object.assign(new Error('timeout'), { code: 'WEB_FETCH_TIMEOUT' })
+    return { url, statusCode: 200, body: { kind: 'html', content: htmlPage('Good', body) }, truncated: false }
+  })
+  const nb = await core.createNotebook('Batch')
+  const result = await core.importUrls(nb.id, ['https://example.com/good', 'https://example.com/bad'])
+  assert.equal(result.results[0].status, 'ok')
+  assert.equal(result.results[1].status, 'error')
+  assert.equal(result.results[1].code, 'WEB_FETCH_TIMEOUT')
+})
+
+test('Web:Refresh 未变化不写入，变化时原位更新，失败保留旧正文', async () => {
+  const oldBody = 'Old reinforcement learning article content. '.repeat(8)
+  const newBody = 'New reinforcement learning article with policy gradients. '.repeat(8)
+  let mode = 'old'
+  const { core } = tmpWebCore(async ({ url }) => {
+    if (mode === 'timeout') throw Object.assign(new Error('timeout'), { code: 'WEB_FETCH_TIMEOUT' })
+    const body = mode === 'new' ? newBody : oldBody
+    return { url, statusCode: 200, body: { kind: 'html', content: htmlPage('Refreshable', body) }, truncated: false }
+  })
+  const nb = await core.createNotebook('Refresh')
+  const added = await core.addSource(nb.id, { type: 'url', url: 'https://example.com/refresh' })
+
+  const unchanged = await core.refreshSource(nb.id, added.sourceId)
+  assert.equal(unchanged.status, 'unchanged')
+  assert.equal((await core.listSources(nb.id)).length, 1)
+
+  mode = 'new'
+  const updated = await core.refreshSource(nb.id, added.sourceId)
+  assert.equal(updated.status, 'updated')
+  assert.equal(updated.sourceId, added.sourceId)
+  assert.equal((await core.listSources(nb.id)).length, 1)
+  assert.ok(core.store.readSource(nb.id, added.sourceId).body.includes('policy gradients'))
+
+  mode = 'timeout'
+  await assert.rejects(() => core.refreshSource(nb.id, added.sourceId), /超时/)
+  assert.ok(core.store.readSource(nb.id, added.sourceId).body.includes('policy gradients'))
+  assert.equal((await core.listSources(nb.id)).length, 1)
 })

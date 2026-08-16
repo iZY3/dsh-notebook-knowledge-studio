@@ -1,6 +1,17 @@
 # Notebook Knowledge Studio — bundle 层：插入插件行。
 # root 指定 OKF 知识库数据根目录（local-first，所有数据留在该目录内，可整体迁移）。
 - insert:
+    # dsh rc.6 默认只挂载搜索 provider；Notebook 的 URL 预览/导入还需要
+    # 官方匿名 HTTP(S) fetch provider。tool-web.fetch 保持宿主默认禁用。
+    - id: web-fetch-http
+      name: '@deepseek-ai/dsh-web-fetch-http'
+      config:
+        maxUrlLength: 2048
+        maxResponseBytes: 5000000
+        maxBodyChars: 400000
+        timeoutMs: 30000
+        maxRedirects: 5
+
     - id: notebook-knowledge-studio
       name: 'dsh-notebook-knowledge-studio'
       config:

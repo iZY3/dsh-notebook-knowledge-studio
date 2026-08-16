@@ -29,5 +29,8 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-web-fetch-http": "0.1.0-rc.6"
   }
 }

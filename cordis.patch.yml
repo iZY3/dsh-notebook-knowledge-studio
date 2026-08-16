@@ -1,0 +1,7 @@
+# Notebook Knowledge Studio — bundle 层：插入插件行。
+# root 指定 OKF 知识库数据根目录（local-first，所有数据留在该目录内，可整体迁移）。
+- insert:
+    - id: notebook-knowledge-studio
+      name: 'dsh-notebook-knowledge-studio'
+      config:
+        root: 'E:/vibe coding/workspace/xhs/.notebook-knowledge'

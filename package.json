@@ -1,6 +1,6 @@
 {
   "name": "dsh-notebook-knowledge-studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Notebook Knowledge Studio — NotebookLM-like local knowledge workspace for DeepSeek Harness: Notebooks, Sources, source-grounded Chat with citations, and Studio artifacts (Mind Map / Reports / Flashcards / Quiz / Infographic / Slide Deck / Data Table), stored as OKF v0.2 markdown under the workspace.",
   "private": true,
   "type": "module",
